@@ -1,0 +1,154 @@
+-- ***************************************************************
+-- Expenditure Fact Table and Dimensions
+-- ***************************************************************
+
+-- 1. SETUP: CREATE DIMENSION TABLES
+-- ***************************************************************
+-- Time Dimension: Provides temporal granularity
+CREATE TABLE Time_Dim (
+    DateID INT PRIMARY KEY,                 -- Surrogate key for unique dates
+    Date DATE NOT NULL UNIQUE,              -- Calendar date
+    FiscalYear INT NOT NULL,                -- Fiscal year
+    Quarter VARCHAR(10) CHECK (Quarter IN ('Q1', 'Q2', 'Q3', 'Q4')), -- Fiscal quarter
+    Month INT CHECK (Month BETWEEN 1 AND 12),  -- Month of the year
+    Day INT CHECK (Day BETWEEN 1 AND 31),       -- Day of the month
+    Weekday VARCHAR(10),                   -- Name of the weekday
+    IsHoliday BOOLEAN DEFAULT FALSE        -- Flag for holidays
+);
+
+-- Program Dimension: Tracks program metadata
+CREATE TABLE Program_Dim (
+    ProgramID INT PRIMARY KEY,                 -- Surrogate key for programs
+    ProgramName VARCHAR(100) NOT NULL UNIQUE,  -- Program name
+    ProgramType VARCHAR(50) CHECK (ProgramType IN ('Training', 'Support', 'Education')), -- Standardized types
+    Provider VARCHAR(100)                     -- Name of the program provider
+);
+
+-- Client Dimension: Tracks client-specific details
+CREATE TABLE Client_Fact (
+    ClientID INT PRIMARY KEY,                 -- Surrogate key for clients
+    ClientName VARCHAR(100),                  -- Client's name
+    Age INT CHECK (Age > 0),                  -- Age of the client
+    Gender VARCHAR(10) CHECK (Gender IN ('M', 'F', 'O')), -- Gender
+    Ethnicity VARCHAR(50),                    -- Ethnicity (e.g., Hispanic, Black)
+    TotalEnrollments INT DEFAULT 0,           -- Total enrollments count
+    ActiveEnrollments INT DEFAULT 0           -- Active enrollments count
+);
+
+-- Vendor Dimension: (Optional Future Use)
+CREATE TABLE Vendor_Dim (
+    VendorID INT PRIMARY KEY,                 -- Surrogate key for vendors
+    VendorName VARCHAR(100) NOT NULL UNIQUE,  -- Vendor's full name
+    Country VARCHAR(50),                      -- Vendor's country
+    VendorType VARCHAR(50)                    -- Vendor type (e.g., supplier, contractor)
+);
+
+-- Funding Source Dimension: (Optional Future Use)
+CREATE TABLE FundingSource_Dim (
+    FundingSourceID INT PRIMARY KEY,          -- Surrogate key for funding sources
+    SourceName VARCHAR(100) NOT NULL UNIQUE,  -- Name of the funding source
+    GrantType VARCHAR(50) CHECK (GrantType IN ('Restricted', 'Unrestricted')), -- Type of funding
+    StartDate DATE NOT NULL,                  -- Funding start date
+    EndDate DATE NOT NULL                     -- Funding end date
+);
+
+-- ***************************************************************
+-- 2. CREATE EXPENDITURE FACT TABLE
+-- ***************************************************************
+CREATE TABLE Expenditure_Fact (
+    ExpenditureID INT PRIMARY KEY,                 -- Unique identifier for each expenditure
+    ProgramID INT NOT NULL,                        -- Foreign key to Program_Dim
+    ClientID INT NULL,                             -- Foreign key to Client_Fact (optional)
+    FiscalYear INT NOT NULL,                       -- Fiscal year
+    Quarter VARCHAR(10) CHECK (Quarter IN ('Q1', 'Q2', 'Q3', 'Q4')), -- Fiscal quarter
+    Month INT CHECK (Month BETWEEN 1 AND 12),      -- Month of the expenditure
+    ExpenditureDate DATE NOT NULL,                 -- Date of the expenditure
+    ExpenseCategory VARCHAR(50) CHECK (ExpenseCategory IN ('Staff', 'Materials', 'Operations', 'Training', 'Travel')), -- Type of expense
+    Amount DECIMAL(15, 2) CHECK (Amount >= 0),     -- Expenditure amount
+    FundingSource VARCHAR(50),                     -- Source of funding
+    AllocationPercent DECIMAL(5, 2) DEFAULT 100,   -- Allocation percentage
+    CostCenter VARCHAR(50),                        -- Internal cost center
+    VendorName VARCHAR(100),                       -- Vendor or payee name
+    InvoiceNumber VARCHAR(50) UNIQUE,              -- Invoice reference
+    PaymentMethod VARCHAR(30) CHECK (PaymentMethod IN ('Credit Card', 'Check', 'Wire Transfer', 'Cash')), -- Payment method
+    Notes TEXT,                                    -- Additional expenditure details
+    -- Foreign Key Constraints
+    FOREIGN KEY (ProgramID) REFERENCES Program_Dim(ProgramID) ON DELETE CASCADE,
+    FOREIGN KEY (ClientID) REFERENCES Client_Fact(ClientID) ON DELETE SET NULL
+);
+
+-- ***************************************************************
+-- 3. PERFORMANCE OPTIMIZATION
+-- ***************************************************************
+-- Indexing for Query Efficiency
+CREATE INDEX idx_expenditure_date ON Expenditure_Fact (ExpenditureDate);
+CREATE INDEX idx_program_id ON Expenditure_Fact (ProgramID);
+CREATE INDEX idx_fiscal_year_quarter ON Expenditure_Fact (FiscalYear, Quarter);
+
+-- Partitioning for Scalability
+-- Note: Syntax varies depending on the database (e.g., MySQL, PostgreSQL, Oracle).
+-- Example for PostgreSQL:
+CREATE TABLE Expenditure_Fact_2022 PARTITION OF Expenditure_Fact
+    FOR VALUES FROM ('2022-01-01') TO ('2023-01-01');
+
+CREATE TABLE Expenditure_Fact_2023 PARTITION OF Expenditure_Fact
+    FOR VALUES FROM ('2023-01-01') TO ('2024-01-01');
+
+-- Materialized View for Frequently Accessed Metrics
+CREATE MATERIALIZED VIEW Expenditure_Summary AS
+SELECT 
+    ProgramID,
+    FiscalYear,
+    Quarter,
+    ExpenseCategory,
+    SUM(Amount) AS TotalExpenditure,
+    AVG(AllocationPercent) AS AverageAllocation
+FROM Expenditure_Fact
+GROUP BY ProgramID, FiscalYear, Quarter, ExpenseCategory;
+
+-- ***************************************************************
+-- 4. DATA VALIDATION AND AUTOMATION
+-- ***************************************************************
+-- Validation Trigger: Ensure Amount is Non-Negative
+CREATE OR REPLACE FUNCTION validate_amount()
+RETURNS TRIGGER AS $$
+BEGIN
+    IF NEW.Amount < 0 THEN
+        RAISE EXCEPTION 'Expenditure amount cannot be negative';
+    END IF;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER validate_amount_trigger
+BEFORE INSERT OR UPDATE ON Expenditure_Fact
+FOR EACH ROW
+EXECUTE FUNCTION validate_amount();
+
+-- ***************************************************************
+-- 5. SAMPLE DATA INSERTION (OPTIONAL)
+-- ***************************************************************
+-- Insert Sample Data into Program_Dim
+INSERT INTO Program_Dim (ProgramID, ProgramName, ProgramType, Provider)
+VALUES 
+(1, 'Workforce Training', 'Training', 'Provider A'),
+(2, 'Health Awareness', 'Support', 'Provider B');
+
+-- Insert Sample Data into Client_Fact
+INSERT INTO Client_Fact (ClientID, ClientName, Age, Gender, Ethnicity, TotalEnrollments, ActiveEnrollments)
+VALUES 
+(101, 'John Doe', 34, 'M', 'Hispanic', 3, 1),
+(102, 'Jane Smith', 29, 'F', 'Black', 5, 2);
+
+-- Insert Sample Data into Expenditure_Fact
+INSERT INTO Expenditure_Fact (
+    ExpenditureID, ProgramID, ClientID, FiscalYear, Quarter, Month, ExpenditureDate, 
+    ExpenseCategory, Amount, FundingSource, AllocationPercent, CostCenter, VendorName, 
+    InvoiceNumber, PaymentMethod, Notes
+) VALUES 
+(1, 1, 101, 2022, 'Q1', 1, '2022-01-15', 'Staff', 1200.50, 'Grant A', 100, 'HR Dept', 'Vendor X', 'INV-001', 'Credit Card', 'Monthly staff training'),
+(2, 2, 102, 2022, 'Q2', 4, '2022-04-10', 'Materials', 500.00, 'Grant B', 100, 'Ops Dept', 'Vendor Y', 'INV-002', 'Check', 'Health awareness materials');
+
+-- ***************************************************************
+-- END
+-- ***************************************************************
