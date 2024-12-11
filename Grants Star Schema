@@ -1,0 +1,186 @@
+-- Step 1: Create the Grants Fact Table
+CREATE TABLE Grants_Fact (
+    Grant_ID INT PRIMARY KEY,
+    Agency_ID INT NOT NULL,
+    Category_ID INT NOT NULL,
+    Grant_Amount DECIMAL(15, 2) NOT NULL,
+    Budget_Amount DECIMAL(15, 2) CHECK (Budget_Amount >= 0),
+    Status VARCHAR(20) CHECK (Status IN ('Active', 'Completed', 'Canceled')),
+    Start_Date DATE NOT NULL,
+    End_Date DATE,
+    Duration INT GENERATED ALWAYS AS (DATEDIFF('day', Start_Date, End_Date)) STORED,
+    Time_ID INT NOT NULL,
+    FOREIGN KEY (Agency_ID) REFERENCES Agency_Dim(Agency_ID),
+    FOREIGN KEY (Category_ID) REFERENCES Grant_Category_Dim(Category_ID),
+    FOREIGN KEY (Time_ID) REFERENCES Time_Dim(Time_ID),
+    CHECK (Grant_Amount >= 0),
+    CHECK (Start_Date <= End_Date)
+);
+
+-- Step 2: Create the Grant Category Dimension Table
+CREATE TABLE Grant_Category_Dim (
+    Category_ID INT PRIMARY KEY,
+    Category_Name VARCHAR(100) NOT NULL UNIQUE,
+    Description TEXT
+);
+
+-- Step 3: Create the Time Dimension Table
+CREATE TABLE Time_Dim (
+    Time_ID INT PRIMARY KEY,
+    Date DATE NOT NULL UNIQUE,
+    Year INT CHECK (Year > 1900),
+    Month INT CHECK (Month BETWEEN 1 AND 12),
+    Day INT CHECK (Day BETWEEN 1 AND 31),
+    Weekday VARCHAR(10) CHECK (Weekday IN ('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday')),
+    Quarter INT CHECK (Quarter BETWEEN 1 AND 4),
+    Fiscal_Year INT CHECK (Fiscal_Year > 1900)
+);
+
+-- Step 4: Create the Agency Dimension Table
+CREATE TABLE Agency_Dim (
+    Agency_ID INT PRIMARY KEY,
+    Agency_Name VARCHAR(100) NOT NULL UNIQUE,
+    Contact_Person VARCHAR(100),
+    Contact_Email VARCHAR(100),
+    Phone_Number VARCHAR(15),
+    Address TEXT
+);
+
+-- Step 5: Create the Audit Log Table for Change Tracking
+CREATE TABLE Audit_Log (
+    Log_ID SERIAL PRIMARY KEY,
+    Table_Name VARCHAR(50),
+    Operation VARCHAR(10),
+    Changed_By VARCHAR(100),
+    Change_Timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Step 6: Populate Grant_Category_Dim with Standard Categories
+INSERT INTO Grant_Category_Dim (Category_ID, Category_Name, Description)
+VALUES
+(1, 'Education', 'Grants related to educational programs and services'),
+(2, 'Health', 'Grants for healthcare and wellness initiatives'),
+(3, 'Infrastructure', 'Grants for building and maintaining public infrastructure');
+
+-- Step 7: Populate Time_Dim Table with Pre-Generated Dates
+-- This assumes you have a utility to generate dates, e.g., in Python or SQL
+DO $$
+DECLARE
+    start_date DATE := '2020-01-01';
+    end_date DATE := '2030-12-31';
+    current_date DATE;
+BEGIN
+    current_date := start_date;
+    WHILE current_date <= end_date LOOP
+        INSERT INTO Time_Dim (
+            Time_ID, Date, Year, Month, Day, Weekday, Quarter, Fiscal_Year
+        )
+        VALUES (
+            EXTRACT(EPOCH FROM current_date)::INT, -- Use a unique surrogate key
+            current_date,
+            EXTRACT(YEAR FROM current_date),
+            EXTRACT(MONTH FROM current_date),
+            EXTRACT(DAY FROM current_date),
+            TO_CHAR(current_date, 'Day'),
+            CASE 
+                WHEN EXTRACT(MONTH FROM current_date) IN (1, 2, 3) THEN 1
+                WHEN EXTRACT(MONTH FROM current_date) IN (4, 5, 6) THEN 2
+                WHEN EXTRACT(MONTH FROM current_date) IN (7, 8, 9) THEN 3
+                ELSE 4
+            END,
+            EXTRACT(YEAR FROM current_date)
+        );
+        current_date := current_date + INTERVAL '1 day';
+    END LOOP;
+END $$;
+
+-- Step 8: Populate Agency_Dim with Sample Agencies
+INSERT INTO Agency_Dim (Agency_ID, Agency_Name, Contact_Person, Contact_Email, Phone_Number, Address)
+VALUES
+(1, 'Health and Human Services', 'John Doe', 'john.doe@hhs.gov', '123-456-7890', '123 Main St, Springfield, USA'),
+(2, 'Education Board', 'Jane Smith', 'jane.smith@edboard.org', '987-654-3210', '456 Elm St, Metropolis, USA');
+
+-- Step 9: Insert Sample Data into Grants_Fact
+INSERT INTO Grants_Fact (Grant_ID, Agency_ID, Category_ID, Grant_Amount, Budget_Amount, Status, Start_Date, End_Date, Time_ID)
+VALUES
+(1001, 1, 2, 50000.00, 60000.00, 'Active', '2024-01-01', '2024-12-31', (SELECT Time_ID FROM Time_Dim WHERE Date = '2024-01-01')),
+(1002, 2, 1, 75000.00, 80000.00, 'Completed', '2024-03-01', '2024-11-30', (SELECT Time_ID FROM Time_Dim WHERE Date = '2024-03-01'));
+
+-- Step 10: Create Indexes to Optimize Query Performance
+CREATE INDEX idx_grants_fact_agency ON Grants_Fact (Agency_ID);
+CREATE INDEX idx_grants_fact_category ON Grants_Fact (Category_ID);
+CREATE INDEX idx_time_dim_date ON Time_Dim (Date);
+CREATE INDEX idx_agency_dim_name ON Agency_Dim (Agency_Name);
+
+-- Step 11: Verify Data Integrity with Queries
+-- Verify Referential Integrity
+SELECT *
+FROM Grants_Fact gf
+LEFT JOIN Agency_Dim ad ON gf.Agency_ID = ad.Agency_ID
+LEFT JOIN Grant_Category_Dim gcd ON gf.Category_ID = gcd.Category_ID
+LEFT JOIN Time_Dim td ON gf.Time_ID = td.Time_ID
+WHERE ad.Agency_ID IS NULL OR gcd.Category_ID IS NULL OR td.Time_ID IS NULL;
+
+-- Step 12: Analyze Data for Reports
+-- Example: Total Grants by Category
+SELECT gcd.Category_Name, SUM(gf.Grant_Amount) AS Total_Grant_Amount
+FROM Grants_Fact gf
+JOIN Grant_Category_Dim gcd ON gf.Category_ID = gcd.Category_ID
+GROUP BY gcd.Category_Name
+ORDER BY Total_Grant_Amount DESC;
+
+-- Example: Grants Issued by Agency
+SELECT ad.Agency_Name, COUNT(gf.Grant_ID) AS Total_Grants, SUM(gf.Grant_Amount) AS Total_Grant_Amount
+FROM Grants_Fact gf
+JOIN Agency_Dim ad ON gf.Agency_ID = ad.Agency_ID
+GROUP BY ad.Agency_Name
+ORDER BY Total_Grant_Amount DESC;
+
+-- Step 13: Create KPI Reporting View
+CREATE VIEW KPI_Report AS
+SELECT
+    gcd.Category_Name,
+    AVG(gf.Grant_Amount) AS Avg_Grant_Amount,
+    COUNT(gf.Grant_ID) AS Total_Grants,
+    SUM(gf.Grant_Amount) AS Total_Grant_Amount
+FROM Grants_Fact gf
+JOIN Grant_Category_Dim gcd ON gf.Category_ID = gcd.Category_ID
+GROUP BY gcd.Category_Name;
+
+-- Step 14: Implement Error Logging Table
+CREATE TABLE Error_Log (
+    Error_ID SERIAL PRIMARY KEY,
+    Error_Message TEXT,
+    Error_Time TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Step 15: Add Role-Based Access Control
+CREATE ROLE DataViewer;
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO DataViewer;
+
+-- Step 16: Add Procurement Integration to the Schema
+-- Create Procurement Dimension Table
+CREATE TABLE Procurement_Dim (
+    Procurement_ID INT PRIMARY KEY,
+    Vendor_Name VARCHAR(100) NOT NULL,
+    Contact_Email VARCHAR(100),
+    Phone_Number VARCHAR(15),
+    Address TEXT,
+    Contract_Value DECIMAL(15, 2),
+    Contract_Start_Date DATE,
+    Contract_End_Date DATE
+);
+
+-- Update Grants_Fact to include Procurement Reference
+ALTER TABLE Grants_Fact
+ADD COLUMN Procurement_ID INT;
+
+-- Add Foreign Key Constraint to Grants_Fact
+ALTER TABLE Grants_Fact
+ADD CONSTRAINT fk_procurement FOREIGN KEY (Procurement_ID) REFERENCES Procurement_Dim(Procurement_ID);
+
+-- Example: Populate Procurement_Dim with Sample Data
+INSERT INTO Procurement_Dim (Procurement_ID, Vendor_Name, Contact_Email, Phone_Number, Address, Contract_Value, Contract_Start_Date, Contract_End_Date)
+VALUES
+(1, 'Tech Solutions LLC', 'contact@techsolutions.com', '555-123-4567', '789 Pine St, Capital City, USA', 250000.00, '2024-01-01', '2024-12-31'),
+(2, 'Data Insights Inc.', 'support@datainsights.com', '555-987-6543', '101 Maple Ave, Uptown, USA', 150000.00, '2024-02-01', '2024-12-31');
